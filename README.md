@@ -24,7 +24,8 @@
   - [查询优化处理](#查询优化处理)  
   - [查询执行引擎](#查询执行引擎)  
   - [返回客户端](#返回客户端)  
-- [如何定位慢SQL](#如何定位慢sql)  
+- [慢SQL](#慢sql)  
+  - [如何定位慢SQL](#如何定位慢sql)  
   - [慢查询日志分析](#慢查询日志分析)  
   - [慢查询日志分析工具](#慢查询日志分析工具)  
 - [事务](#事务)  
@@ -65,7 +66,7 @@
 正确的创建合适的索引是提升数据库查询性能的基础。  
 
 #### 索引是什么  
-索引是为了加速对表中数据行的检索而创建的一种分散存储的数据结构。  
+索引是为了加速对表中数据行的检索而创建的一种分散存储的数据结构(硬盘级)。  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E7%B4%A2%E5%BC%95.jpeg)  
   
 #### 为什么要用索引  
@@ -80,15 +81,19 @@
 平衡二叉查找树 Balanced Binary Search Tree  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E7%9B%B8%E5%AF%B9%E5%B9%B3%E8%A1%A1%E4%BA%8C%E5%8F%89%E6%A0%91.jpeg)  
   
-缺点  
-它太深了  
-数据处的(高)深度决定着他的IO操作次数，IO操作耗时大  
-它太小了  
-每一个磁盘块(节点/页)保存的数据量太小了  
-没有很好的利用操作磁盘IO的数据交换特性，也没有利用好磁盘IO的预读能力(空间局部性原理)，从而带来频繁的IO操作。  
+二叉树和平衡二叉树的缺点：  
+  
+树结构太深  
+因为每个节点都存有数据，数据处的(高)深度决定着他的IO操作次数，IO操作耗时大。  
+  
+数据存储太小  
+每一个磁盘块(节点/页，单位4kb)保存的数据量(远远不足4k)太小了  
+没有很好的利用操作磁盘IO的数据交换特性，也没有利用好磁盘IO的预读能力(空间局部性原理，预读8k、12k等)，从而带来频繁的IO操作。  
   
 多路平衡查找树 B-Tree  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E7%BB%9D%E5%AF%B9%E5%B9%B3%E8%A1%A1%E4%BA%8C%E5%8F%89%E6%A0%91.jpeg)  
+  
+平衡查找树的分支数量与关键字大小有关，可以大致认为：磁盘块的容量/关键字大小 = 平衡树分支数量。  
   
 加强版的多路平衡查找树 Mysql的B+Tree  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/B%2Btree.jpeg)  
@@ -100,21 +105,29 @@ B+Tree与B-Tree的区别
 4.B+叶子节点是顺序排列的，并且相邻节点具有顺序引用的关系  
   
 为什么选择B+Tree  
-B+树是B-树的变种(PLUS版)多路绝对平衡查找树，他拥有B-树的优势 B+树扫库、表能力更强  
+B+树是B-树的变种(PLUS版)多路绝对平衡查找树，他拥有B-树的优势  
+B+树扫库、表能力更强  
 B+树的磁盘读写能力更强  
 B+树的排序能力更强   
-B+树的查询效率更加稳定(仁者见仁、智者见智)  
+B+树的查询效率更加稳定  
   
 #### Mysql B+Tree索引体现形式  
 Myisam  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/Myisam%E7%B4%A2%E5%BC%95.jpeg)  
+  
+数据保存在MYD文件，索引文件为MYI。  
   
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/Myisam%E5%8F%8C%E7%B4%A2%E5%BC%95.jpeg)  
   
 Innodb  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/InnoDB%E7%B4%A2%E5%BC%95.jpeg)  
   
+未指定索引的情况下InnoDB会自动生成隐式索引。  
+  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/InnoDB%E5%8F%8C%E7%B4%A2%E5%BC%95.jpeg)  
+  
+这样设计的好处就是在数据迁移的时候辅助索引可以不做作相应的指向改变。  
+对于InnoDB的辅助索引，它的叶子节点存储的是索引值和指向主键索引的位置。  
   
 Myisam VS Innodb  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E7%B4%A2%E5%BC%95%E5%AF%B9%E6%AF%94.jpeg)  
@@ -122,10 +135,11 @@ Myisam VS Innodb
 #### 索引知识点  
 列的离散性  
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E7%B4%A2%E5%BC%95%E7%A6%BB%E6%95%A3%E6%80%A7.jpeg)  
-越大离散型越好，离散性越高，选择性就越好。  
+  
+离散性低的索引会造成选择性差，无法寻找合适的分支，数库会使用全局扫描。类似男女这种字段如果简历索引则要简历位图索引。  
   
 最左匹配原则  
-对索引中关键字进行计算(对比)，一定是从左往右依次进行，且不可跳过。
+对索引中关键字进行计算(对比)，一定是从左往右依次进行(每一位)，且不可跳过。
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E6%9C%80%E5%B7%A6%E5%8C%B9%E9%85%8D.jpeg)  
   
 联合索引  
@@ -139,6 +153,8 @@ Myisam VS Innodb
 3.宽度小的列优先【最少空间原则】  
   
 覆盖索引  
+如果索引包含所有满足查询需要的数据的索引成为覆盖索引(Covering Index)，也就是平时所说的不需要回表操作。  
+使用explain，可以通过输出的extra列来判断，对于一个索引覆盖查询，显示为using index，MySQL查询优化器在执行查询前会决定是否有索引覆盖查询。  
 覆盖索引可减少数据库IO，将随机IO变为顺序IO，可提高查询性能。  
 
 #### 索引使用注意点  
@@ -161,7 +177,7 @@ Myisam VS Innodb
 #### CSV存储引擎  
 数据存储以CSV文件  
 特点:  
-不能定义没有索引、列定义必须为NOT NULL、不能设置自增列 -->不适用大表或者数据的在线处理  
+不能定义索引、列定义必须为NOT NULL、不能设置自增列 -->不适用大表或者数据的在线处理  
 CSV数据的存储用,隔开，可直接编辑CSV文件进行数据的编排 -->数据安全性低  
 注:编辑之后，要生效使用flush table XXX 命令  
   
@@ -291,11 +307,12 @@ Sorting result
 线程正在对结果进行排序  
 Sending data  
 向请求端返回数据  
-可通过kill {id}的方式进行连接的杀掉  
+  
+可通过kill {id} 的方式进行连接的杀掉  
   
 #### 查询缓存  
 工作原理:  
-缓存SELECT操作的结果集和SQL语句;   
+>缓存SELECT操作的结果集和SQL语句;  
 新的SELECT语句，先去查询缓存，判断是否存在可用的记录集;  
   
 判断标准:  
@@ -307,11 +324,10 @@ query_cache_type
 值:2 -– 启用查询缓存，只要查询语句中添加了参数:SQL_CACHE，且符合查询缓存的要求，客户端的查询语句和记录集，则可以缓存起来，供其他客户端使用。  
   
 query_cache_size  
-允许设置query_cache_size的值最小为40K，默认1M，推荐设置为:64M/128M;  
-  
+>允许设置query_cache_size的值最小为40K，默认1M，推荐设置为:64M/128M;   
 query_cache_limit 限制查询缓存区最大能缓存的查询记录集，默认设置为1M  
   
-show status like 'Qcache%' 命令可查看缓存情况  
+`show status like 'Qcache%' `命令可查看缓存情况。  
   
 不会缓存的情况  
 >1.当查询语句中有一些不确定的数据时，则不会被缓存。如包含函数NOW()，CURRENT_DATE()等类似的函数，或者用户自定义的函数，存储函数，用户变量等都不会被缓存。  
@@ -334,7 +350,7 @@ show status like 'Qcache%' 命令可查看缓存情况
 查询优化处理的三个阶段:  
 >1.解析sql通过lex词法分析,yacc语法分析将sql语句解析成解析树。  
 https://www.ibm.com/developerworks/cn/linux/sdk/lex/  
-2.预处理阶段 根据mysql的语法的规则进一步检查解析树的合法性，如:检查数据的表和列是否存在，解析名字和别名的设置，还会进行权限的验证。  
+2.预处理阶段 根据mysql的语法的规则进一步检查解析树的合法性，如：检查数据的表和列是否存在，解析名字和别名的设置，还会进行权限的验证。  
 3.查询优化器 优化器的主要作用就是找到最优的执行计划。  
   
 查询优化器如何找到最优执行计划  
@@ -355,22 +371,23 @@ myisam引擎count(*)
 >先进性排序，再采用二分查找的方式
 ...  
   
-Mysql的查询优化器是基于成本计算的原则。他会尝试各种执行计划。数据抽样的方式进行试验(随机的读取一个4K的数据块进行分析)。  
+Mysql的查询优化器基于成本计算的原则，会尝试各种执行计划，以数据抽样的方式进行试验(随机的读取一个4K的数据块进行分析)。  
   
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E6%9F%A5%E8%AF%A2%E4%BC%98%E5%8C%96.jpeg)  
   
 id  
 select查询的序列号，标识执行的顺序  
-1.id相同，执行顺序由上至下  
+>1.id相同，执行顺序由上至下。  
 2.id不同，如果是子查询，id的序号会递增，id值越大优先级越高，越先被执行。  
-3.id相同又不同即两种情况同时存在，id如果相同，可以认为是一组，从上往下顺序执行;在所有组中，id值越大，优先级越高，越先执行。  
+3.id相同又不同即两种情况同时存在，id如果相同，可以认为是一组，从上往下顺序执行；在所有组中，id值越大，优先级越高，越先执行。  
   
 select_type  
->查询的类型，主要是用于区分普通查询、联合查询、子查询等  
-SIMPLE:简单的select查询，查询中不包含子查询或者union  
+查询的类型，主要是用于区分普通查询、联合查询、子查询等  
+>SIMPLE:简单的select查询，查询中不包含子查询或者union  
 PRIMARY:查询中包含子部分，最外层查询则被标记为primary  
-SUBQUERY/MATERIALIZED:SUBQUERY表示在select 或 where列表中包含了子查询  
-MATERIALIZED表示where 后面in条件的子查询  
+SUBQUERY/MATERIALIZED:  
+SUBQUERY表示在select或where列表中包含了子查询  
+MATERIALIZED表示where后面in条件的子查询  
 UNION:若第二个select出现在union之后，则被标记为union   
 UNION RESULT:从union表获取结果的select  
   
@@ -383,15 +400,14 @@ table
 type  
 访问类型，sql查询优化中一个很重要的指标，结果值从好到坏依次是:   
 system > const > eq_ref > ref > range > index > ALL  
-  
-system:表只有一行记录(等于系统表)，const类型的特例，基本不会出现，可以忽略不计。   
-const:表示通过索引一次就找到了，const用于比较primary key 或者。  
-unique索引 eq_ref:唯一索引扫描，对于每个索引键，表中只有一条记录与之匹配。常见于主键或唯一索引扫描。  
+>system:表只有一行记录(等于系统表)，const类型的特例，基本不会出现，可以忽略不计。  
+const:表示通过索引一次就找到了，const用于比较primary key或者unique索引。  
+eq_ref:唯一索引扫描，对于每个索引键，表中只有一条记录与之匹配。常见于主键或唯一索引扫描。  
 ref:非唯一性索引扫描，返回匹配某个单独值的所有行，本质是也是一种索引访问。  
 range:只检索给定范围的行，使用一个索引来选择行。  
 index:Full Index Scan，索引全表扫描，把索引从头到尾扫一遍。  
 ALL:Full Table Scan，遍历全表以找到匹配的行。  
-
+  
 possible_keys  
 查询过程中有可能用到的索引  
   
@@ -402,34 +418,34 @@ rows
 根据表统计信息或者索引选用情况，大致估算出找到所需的记录所需要读取的行数  
   
 filtered  
-它指返回结果的行占需要读到的行(rows列的值)的百分比  
 表示返回结果的行数占需读取行数的百分比，filtered的值越大越好  
   
 Extra  
 十分重要的额外信息  
-1.Using filesort : mysql对数据使用一个外部的文件内容进行了排序，而不是按照表内的索引进行排序读取  
-2.Using temporary: 使用临时表保存中间结果，也就是说mysql在对查询结果排序时使用了临时表，常见于order by 或 group by  
-3.Using index:表示相应的select操作中使用了覆盖索引(Covering Index)，避免了访问表的数据行，效率高  
-4.Using where : 使用了where过滤条件  
-5.select tables optimized away: 基于索引优化MIN/MAX操作或者MyISAM存储引擎优化COUNT(*)操作，不必等到执行阶段在进行计算，查询执行计划生成的阶段即可完成优化  
+>1.Using filesort : mysql对数据使用一个外部的文件内容进行了排序，而不是按照表内的索引进行排序读取。  
+2.Using temporary: 使用临时表保存中间结果，也就是说mysql在对查询结果排序时使用了临时表，常见于order by 或 group by。  
+3.Using index:表示相应的select操作中使用了覆盖索引(Covering Index)，避免了访问表的数据行，效率高。  
+4.Using where : 使用了where过滤条件。  
+5.select tables optimized away: 基于索引优化MIN/MAX操作或者MyISAM存储引擎优化COUNT(*)操作，不必等到执行阶段在进行计算，查询执行计划生成的阶段即可完成优化。  
   
 #### 查询执行引擎  
-调用插件式的存储引擎的原子API的功能进行执行计划的执行  
+调用插件式的存储引擎的原子API的功能进行执行计划的执行。  
   
 #### 返回客户端  
-1.有需要做缓存的，执行缓存操作。  
-2.增量的返回结果: 开始生成第一条结果时,mysql就开始往请求方逐步返回数据。  
+>1.有需要做缓存的，执行缓存操作。  
+2.增量的返回结果：开始生成第一条结果时，mysql就开始往请求方逐步返回数据。  
 好处: mysql服务器无须保存过多的数据，浪费内存；用户体验好，马上就拿到了数据。  
   
-### 如何定位慢SQL  
+### 慢SQL
   
+#### 如何定位慢SQL   
 >1.业务驱动  
 2.测试驱动  
 3.慢查询日志  
 ```  
 show variables like 'slow_query_log'  
 set global slow_query_log = on  
-set global slow_query_log_file = '/var/lib/mysql/gupaoedu-slow.log'   
+set global slow_query_log_file = '/var/lib/mysql/test-slow.log'   
 set global log_queries_not_using_indexes = on  
 set global long_query_time = 0.1 (秒)  
 ```
@@ -440,7 +456,8 @@ set global long_query_time = 0.1 (秒)
 ```
 Time :日志记录的时间  
 User@Host:执行的用户及主机  
-Query_time:查询耗费时间 Lock_time 锁表时间  
+Query_time:查询耗费时间  
+Lock_time 锁表时间  
 Rows_sent 发送给请求方的记录条数  
 Rows_examined 语句扫描的记录条数  
 SET timestamp 语句执行的时间点  
@@ -448,11 +465,14 @@ select .... 执行的具体语句
 ```
   
 #### 慢查询日志分析工具  
-mysqldumpslow -t 10 -s at /var/lib/mysql/gupaoedu-slow.log  
+```
+mysqldumpslow -t 10 -s at /var/lib/mysql/test-slow.log  
+```
 ![](https://github.com/YufeizhangRay/image/blob/master/MySQL/%E6%85%A2%E6%9F%A5%E8%AF%A2%E5%B7%A5%E5%85%B7.jpeg)  
   
 其他工具  
-mysqlsla pt-query-digest  
+>mysqlsla  
+pt-query-digest  
   
 ### 事务  
   
@@ -463,7 +483,7 @@ mysqlsla pt-query-digest
 典型事务场景(转账):  
 ```
 update user_account set balance = balance - 1000 where userID = 3;   
-update user_account set balance = balance +1000 where userID = 1;  
+update user_account set balance = balance + 1000 where userID = 1;  
 ```
   
 mysql中如何开启事务:  
@@ -476,14 +496,14 @@ JDBC 编程:
 connection.setAutoCommit(boolean);  
   
 Spring 事务AOP编程: 
-expression=execution(com.gpedu.dao.*.*(..))  
+expression=execution(cn.zyf.dao.*.*(..))  
 ```
   
 #### 事务的ACID特性
->原子性(Atomicity) 最小的工作单元，整个工作单元要么一起提交成功，要么全部失败回滚  
-一致性(Consistency) 事务中操作的数据及状态改变是一致的，即写入资料的结果必须完全符合预设的规则，不会因为出现系统意外等原因导致状态的不一致  
-隔离性(Isolation) 一个事务所操作的数据在提交之前，对其他事务的可见性设定(一般设定为不可见)  
-持久性(Durability) 事务所做的修改就会永久保存，不会因为系统意外导致数据的丢失  
+>原子性(Atomicity) 最小的工作单元，整个工作单元要么一起提交成功，要么全部失败回滚。  
+一致性(Consistency) 事务中操作的数据及状态改变是一致的，即写入资料的结果必须完全符合预设的规则，不会因为出现系统意外等原因导致状态的不一致。  
+隔离性(Isolation) 一个事务所操作的数据在提交之前，对其他事务的可见性设定(一般设定为不可见)。  
+持久性(Durability) 事务所做的修改就会永久保存，不会因为系统意外导致数据的丢失。  
   
 #### 事务并发带来的的问题  
 脏读  
@@ -749,7 +769,10 @@ set session autocommit = ON/OFF;
 mysql --help 寻找配置文件的位置和加载顺序  
 ```  
 Default options are read from the following files in the given order:  
-/etc/my.cnf /etc/mysql/my.cnf /usr/etc/my.cnf ~/.my.cnf  
+/etc/my.cnf 
+/etc/mysql/my.cnf 
+/usr/etc/my.cnf 
+~/.my.cnf  
 ```
 ```
 mysql --help | grep -A 1 'Default options are read from the following files in the given order'
@@ -791,7 +814,7 @@ sort_buffer_size connection排序缓冲区大小
 当查询语句中有需要文件排序功能时，马上为connection分配配置的内存大小  
   
 join_buffer_size connection关联查询缓冲区大小  
-建议256K(默认值)-> 1M之内 当查询语句中有关联查询时，马上分配配置大小的内存用这个关联查询，所以有可能在一个查询语句中会分配很多个关联查询缓冲区  
+建议256K(默认值)-> 1M之内 当查询语句中有关联查询时，马上分配配置大小的内存用这个关联查询，所以有可能在一个查询语句中会分配很多个关联查询缓冲区。  
   
 上述配置4000连接占用内存:  
 4000*(0.256M+0.256M) = 2G  
